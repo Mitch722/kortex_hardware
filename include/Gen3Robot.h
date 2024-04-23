@@ -170,6 +170,7 @@ private:
   pinocchio::Model model;
   pinocchio::Data data;
   std::string mURDFFile;
+  std::string mPrefix;
 };
 
 #endif

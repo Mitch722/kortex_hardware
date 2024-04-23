@@ -78,6 +78,7 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   ros::param::get("~use_gripper", mUseGripper);
   ros::param::get("~use_admittance", mUseAdmittance);
   ros::param::get("~urdf_file", mURDFFile);
+  ros::param::get("~prefix", mPrefix);
 
   ROS_INFO("Starting to initialize kortex_hardware");
   num_full_dof = num_arm_dof + num_finger_dof;
@@ -130,7 +131,7 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   // this gives joint states (pos, vel, eff) back as an output.
   for (std::size_t i = 0; i < num_arm_dof; ++i)
   {
-    std::string jnt_name = "joint_" + std::to_string(i + 1);
+    std::string jnt_name = mPrefix + "joint_" + std::to_string(i + 1);
 
     // connect and register the joint state interface.
     // this gives joint states (pos, vel, eff) back as an output.
@@ -260,24 +261,7 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   }
 
   // pinnochio initialization
-  std::string package_path, urdf_path;
-  try
-  {
-    package_path = ros::package::getPath("kortex_description");
-    if (mURDFFile.empty())
-    {
-      if (num_arm_dof == 6)
-        mURDFFile = "gen3_6dof_vision_forque.urdf";
-      else
-        mURDFFile = "gen3_7dof_vision.urdf";
-    }
-    urdf_path = package_path + "/robots/" + mURDFFile;
-  }
-  catch (const std::exception& e)
-  {
-    std::cerr << "URDF read error: " << e.what() << std::endl;
-  }
-  pinocchio::urdf::buildModel(urdf_path, model);
+  pinocchio::urdf::buildModel(mURDFFile, model);
   data = pinocchio::Data(model);
 }
 
