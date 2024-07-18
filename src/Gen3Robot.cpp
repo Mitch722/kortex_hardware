@@ -28,13 +28,13 @@ int64_t GetTickUs()
 #endif
 }
 
-void addGravityCompensation(
+void Gen3Robot::addGravityCompensation(
     pinocchio::Model& model,
     pinocchio::Data& data,
     std::vector<double>& config,
     std::vector<double>& command)
 {
-  Eigen::VectorXd q = pinocchio::neutral(model);
+  q_.setZero();
   // convert ROS joint config to pinocchio config
   for (int i = 0; i < model.nv; i++)
   {
@@ -43,21 +43,20 @@ void addGravityCompensation(
     // nqs[i] is 2 for continuous joints in pinocchio
     if (model.nqs[jidx] == 2)
     {
-      q[qidx] = std::cos(config[i]);
-      q[qidx + 1] = std::sin(config[i]);
+      q_[qidx] = std::cos(config[i]);
+      q_[qidx + 1] = std::sin(config[i]);
     }
     else
     {
-      q[qidx] = config[i];
+      q_[qidx] = config[i];
     }
   }
 
-  Eigen::VectorXd gravity
-      = pinocchio::computeGeneralizedGravity(model, data, q);
+  gravity_ = pinocchio::computeGeneralizedGravity(model, data, q_);
   // add gravity compensation torque to base command
   for (int i = 0; i < model.nv; i++)
   {
-    command[i] = command[i] + gravity[i];
+    command[i] = command[i] + gravity_[i];
   }
 }
 
@@ -263,6 +262,8 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   // pinnochio initialization
   pinocchio::urdf::buildModel(mURDFFile, model);
   data = pinocchio::Data(model);
+  q_ = pinocchio::neutral(model);
+  gravity_ = pinocchio::computeGeneralizedGravity(model, data, q_); 
 }
 
 Gen3Robot::~Gen3Robot()
