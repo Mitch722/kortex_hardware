@@ -162,24 +162,24 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
 
   // connect and register the joint state interface for gripper
   hardware_interface::JointStateHandle grp_state_handle(
-      "finger_joint",
+      mPrefix +"finger_joint",
       &pos[num_full_dof - 1],
       &vel[num_full_dof - 1],
       &eff[num_full_dof - 1]);
   jnt_state_interface.registerHandle(grp_state_handle);
 
   hardware_interface::JointHandle grp_vel_handle(
-      jnt_state_interface.getHandle("finger_joint"),
+      jnt_state_interface.getHandle(mPrefix + "finger_joint"),
       &cmd_vel[num_full_dof - 1]);
   jnt_vel_interface.registerHandle(grp_vel_handle);
 
   hardware_interface::JointHandle grp_pos_handle(
-      jnt_state_interface.getHandle("finger_joint"),
+      jnt_state_interface.getHandle(mPrefix + "finger_joint"),
       &cmd_pos[num_full_dof - 1]);
   jnt_pos_interface.registerHandle(grp_pos_handle);
 
   hardware_interface::JointHandle grp_eff_handle(
-      jnt_state_interface.getHandle("finger_joint"),
+      jnt_state_interface.getHandle(mPrefix + "finger_joint"),
       &cmd_eff[num_full_dof - 1]);
   jnt_eff_interface.registerHandle(grp_eff_handle);
 
@@ -239,13 +239,13 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   finger = gripper_command.mutable_gripper()->add_finger();
   finger->set_finger_identifier(1);
 
-  arm_mode = hardware_interface::JointCommandModes::MODE_VELOCITY;
-  gripper_mode = hardware_interface::JointCommandModes::MODE_VELOCITY;
+  arm_mode = hardware_interface::JointCommandModes::MODE_EFFORT;
+  gripper_mode = hardware_interface::JointCommandModes::MODE_POSITION;
   last_arm_mode = hardware_interface::JointCommandModes::BEGIN;
 
   // Initialize the low pass filter
-  in_lpf = new LowPassFilter(0.001, 30, num_full_dof);
-  out_lpf = new LowPassFilter(0.001, 500, num_full_dof);
+  in_lpf = new LowPassFilter(1000, 30, num_full_dof);
+  out_lpf = new LowPassFilter(1000, 100, num_full_dof);
 
   // Initialize current control parameters
   if (num_arm_dof == 6)
@@ -530,6 +530,34 @@ void Gen3Robot::sendGripperVelocityCommand(const float& command)
   }
 }
 
+void Gen3Robot::sendGripperEffortCommand(const float& command)
+{ 
+  std::cout << "Sending gripper effort command: " << command << std::endl;
+  gripper_command.set_mode(k_api::Base::GRIPPER_FORCE);
+  finger->set_value(command);
+  try
+  {
+    mBase->SendGripperCommand(gripper_command);
+  }
+  catch (k_api::KDetailedException& ex)
+  {
+    std::cout << "Kortex exception: " << ex.what() << std::endl;
+
+    std::cout << "Error sub-code: "
+              << k_api::SubErrorCodes_Name(k_api::SubErrorCodes(
+                     (ex.getErrorInfo().getError().error_sub_code())))
+              << std::endl;
+  }
+  catch (std::runtime_error& ex2)
+  {
+    std::cout << "runtime error: " << ex2.what() << std::endl;
+  }
+  catch (...)
+  {
+    std::cout << "Unknown error." << std::endl;
+  }
+}
+
 void Gen3Robot::setBaseCommand()
 {
   k_api::BaseCyclic::Command base_command;
@@ -721,6 +749,8 @@ void Gen3Robot::sendCurrentCommand(std::vector<double>& command)
   catch (std::runtime_error& ex2)
   {
     std::cout << "Error: " << ex2.what() << std::endl;
+  } catch (...) {
+    std::cout << "Unknown exception inside 'sendCurrentCommand' caught" << std::endl;
   }
   last = GetTickUs();
 }
@@ -813,6 +843,9 @@ void Gen3Robot::write(void)
         case hardware_interface::JointCommandModes::MODE_POSITION:
           sendGripperPositionCommand(cmd_pos[num_full_dof - 1]);
           break;
+        case hardware_interface::JointCommandModes::MODE_EFFORT:
+          sendGripperPositionCommand(cmd_pos[num_full_dof - 1]);
+          break;
         default:
           // Stop Gripper
           sendGripperVelocityCommand(0);
@@ -870,9 +903,9 @@ void Gen3Robot::read(void)
     in_lpf->initLPF(eff);
     is_in_lpf_initialized = true;
   }
-  // in_lpf->getFilteredEffort(eff);
-  // std::vector<double> filteredEff = in_lpf->getFilteredEffort(eff);
-  // eff = filteredEff;
+  in_lpf->getFilteredEffort(eff);
+  std::vector<double> filteredEff = in_lpf->getFilteredEffort(eff);
+  eff = filteredEff;
 
   // Read finger state. Note: position and velocity are percentage values
   // (0-100). Effort is set as current consumed by gripper motor (mA).

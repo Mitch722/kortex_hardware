@@ -8,7 +8,7 @@ LowPassFilter::LowPassFilter(
 {
   // Initialize alpha (filter coefficient) based on sampling rate and cutoff
   // frequency and set previous torque vector size to dof
-  alpha_ = 1 / (1 + 2 * M_PI * cutoff_frequency * sampling_rate);
+  alpha_ = 2.0*M_PI*cutoff_frequency/(2.0*M_PI*cutoff_frequency + sampling_rate);
   tau_J_prev.resize(dof);
   filtered_tau_J.resize(dof);
   std::cout << "Low pass filter initialized with alpha = " << alpha_

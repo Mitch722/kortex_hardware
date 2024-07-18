@@ -68,6 +68,7 @@ public:
   void sendCurrentCommand(std::vector<double>& command);
   void sendGripperPositionCommand(const float& command);
   void sendGripperVelocityCommand(const float& command);
+  void sendGripperEffortCommand(const float& command);
   void sendGripperLowLevelCommand(const float& command);
   void setBaseCommand();
   void switchToEffortMode();
