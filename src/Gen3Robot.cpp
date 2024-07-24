@@ -1,7 +1,14 @@
 #include "Gen3Robot.h"
 
 #include <cmath> // std::abs
+#include <thread>
 #include <typeinfo>
+
+#if __has_include(<pthread.h>) && __has_include(<sched.h>)
+  #include <pthread.h>
+  #include <sched.h>
+  #define KORTEX_HARDWARE__THREAD_PRIORITY
+#endif
 
 #include <unistd.h>
 
@@ -264,6 +271,51 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   data = pinocchio::Data(model);
   q_ = pinocchio::neutral(model);
   gravity_ = pinocchio::computeGeneralizedGravity(model, data, q_); 
+
+#ifdef KORTEX_HARDWARE__THREAD_PRIORITY
+  std::ifstream realtime_file {"/sys/kernel/realtime", std::ios::in};
+  bool has_realtime {false};
+  if (realtime_file.is_open()) {
+    realtime_file >> has_realtime;
+  }
+
+  ::pthread_t const current_thread {pthread_self()};
+  int cpu_core {-1};
+  if (ros::param::get("~cpu_core", cpu_core)) {
+    ::cpu_set_t cpuset {};
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_core, &cpuset);
+    if (::pthread_setaffinity_np(current_thread, sizeof(::cpu_set_t), &cpuset) == 0) {
+      std::cout << "Set thread affinity to cpu '" << cpu_core << "'!" << std::endl;
+    } else {
+      std::cerr << "Failed to set thread affinity to cpu '" << cpu_core << "'!" << std::endl;
+    }
+  } else {
+    std::cerr << "Failed to get cpu_core for setting thread affinity, not pinning process!" << std::endl;
+  }
+  int policy {};
+  struct ::sched_param param {};
+  ::pthread_getschedparam(current_thread, &policy, &param);
+  if (has_realtime) {
+    policy = SCHED_FIFO;
+    std::cout << "Real-time system detected: Setting policy to 'SCHED_FIFO'..." << std::endl;
+  }
+  int const max_thread_priority {::sched_get_priority_max(policy)};
+  if (max_thread_priority != -1) {
+    param.sched_priority = max_thread_priority;
+    if (::pthread_setschedparam(current_thread, policy, &param) == 0) {
+      std::cout << "Set thread priority '" << param.sched_priority << "' and policy '" <<
+       policy << "' to async thread!" << std::endl;
+    } else {
+      std::cerr << "Failed to set thread priority '" << param.sched_priority << "' and policy '" <<
+       policy << "' to async thread!" << std::endl;
+    }
+  } else {
+    std::cerr << "Could not set thread priority to async thread: Failed to get max priority!" << std::endl;
+  }
+#endif  // KORTEX_HARDWARE__THREAD_PRIORITY
+
+
 }
 
 Gen3Robot::~Gen3Robot()
