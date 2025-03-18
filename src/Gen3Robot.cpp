@@ -585,7 +585,6 @@ void Gen3Robot::sendGripperVelocityCommand(const float& command)
 
 void Gen3Robot::sendGripperEffortCommand(const float& command)
 { 
-  std::cout << "Sending gripper effort command: " << command << std::endl;
   gripper_command.set_mode(k_api::Base::GRIPPER_FORCE);
   finger->set_value(command);
   try
