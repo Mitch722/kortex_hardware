@@ -62,12 +62,15 @@ public:
   inline double radiansToFingerTicks(double radians);
   inline double fingerTicksToRadians(double ticks);
 
+  void addGravityCompensation(pinocchio::Model& model, pinocchio::Data& data, std::vector<double>& config, std::vector<double>& command);
+
   void sendPositionCommand(const std::vector<double>& command);
   void sendVelocityCommand(const std::vector<double>& command);
   void sendTorqueCommand(std::vector<double>& command);
   void sendCurrentCommand(std::vector<double>& command);
   void sendGripperPositionCommand(const float& command);
   void sendGripperVelocityCommand(const float& command);
+  void sendGripperEffortCommand(const float& command);
   void sendGripperLowLevelCommand(const float& command);
   void setBaseCommand();
   void switchToEffortMode();
@@ -167,9 +170,12 @@ private:
   int64_t last = 0;
 
   // Gravity compensation related variables
+  Eigen::VectorXd q_;
+  Eigen::VectorXd gravity_;
   pinocchio::Model model;
   pinocchio::Data data;
   std::string mURDFFile;
+  std::string mPrefix;
 };
 
 #endif

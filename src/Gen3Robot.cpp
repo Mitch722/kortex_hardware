@@ -1,7 +1,14 @@
 #include "Gen3Robot.h"
 
 #include <cmath> // std::abs
+#include <thread>
 #include <typeinfo>
+
+#if __has_include(<pthread.h>) && __has_include(<sched.h>)
+  #include <pthread.h>
+  #include <sched.h>
+  #define KORTEX_HARDWARE__THREAD_PRIORITY
+#endif
 
 #include <unistd.h>
 
@@ -28,13 +35,13 @@ int64_t GetTickUs()
 #endif
 }
 
-void addGravityCompensation(
+void Gen3Robot::addGravityCompensation(
     pinocchio::Model& model,
     pinocchio::Data& data,
     std::vector<double>& config,
     std::vector<double>& command)
 {
-  Eigen::VectorXd q = pinocchio::neutral(model);
+  q_.setZero();
   // convert ROS joint config to pinocchio config
   for (int i = 0; i < model.nv; i++)
   {
@@ -43,21 +50,20 @@ void addGravityCompensation(
     // nqs[i] is 2 for continuous joints in pinocchio
     if (model.nqs[jidx] == 2)
     {
-      q[qidx] = std::cos(config[i]);
-      q[qidx + 1] = std::sin(config[i]);
+      q_[qidx] = std::cos(config[i]);
+      q_[qidx + 1] = std::sin(config[i]);
     }
     else
     {
-      q[qidx] = config[i];
+      q_[qidx] = config[i];
     }
   }
 
-  Eigen::VectorXd gravity
-      = pinocchio::computeGeneralizedGravity(model, data, q);
+  gravity_ = pinocchio::computeGeneralizedGravity(model, data, q_);
   // add gravity compensation torque to base command
   for (int i = 0; i < model.nv; i++)
   {
-    command[i] = command[i] + gravity[i];
+    command[i] = command[i] + gravity_[i];
   }
 }
 
@@ -78,6 +84,7 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   ros::param::get("~use_gripper", mUseGripper);
   ros::param::get("~use_admittance", mUseAdmittance);
   ros::param::get("~urdf_file", mURDFFile);
+  ros::param::get("~prefix", mPrefix);
 
   ROS_INFO("Starting to initialize kortex_hardware");
   num_full_dof = num_arm_dof + num_finger_dof;
@@ -130,7 +137,7 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   // this gives joint states (pos, vel, eff) back as an output.
   for (std::size_t i = 0; i < num_arm_dof; ++i)
   {
-    std::string jnt_name = "joint_" + std::to_string(i + 1);
+    std::string jnt_name = mPrefix + "joint_" + std::to_string(i + 1);
 
     // connect and register the joint state interface.
     // this gives joint states (pos, vel, eff) back as an output.
@@ -161,24 +168,24 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
 
   // connect and register the joint state interface for gripper
   hardware_interface::JointStateHandle grp_state_handle(
-      "finger_joint",
+      mPrefix +"finger_joint",
       &pos[num_full_dof - 1],
       &vel[num_full_dof - 1],
       &eff[num_full_dof - 1]);
   jnt_state_interface.registerHandle(grp_state_handle);
 
   hardware_interface::JointHandle grp_vel_handle(
-      jnt_state_interface.getHandle("finger_joint"),
+      jnt_state_interface.getHandle(mPrefix + "finger_joint"),
       &cmd_vel[num_full_dof - 1]);
   jnt_vel_interface.registerHandle(grp_vel_handle);
 
   hardware_interface::JointHandle grp_pos_handle(
-      jnt_state_interface.getHandle("finger_joint"),
+      jnt_state_interface.getHandle(mPrefix + "finger_joint"),
       &cmd_pos[num_full_dof - 1]);
   jnt_pos_interface.registerHandle(grp_pos_handle);
 
   hardware_interface::JointHandle grp_eff_handle(
-      jnt_state_interface.getHandle("finger_joint"),
+      jnt_state_interface.getHandle(mPrefix + "finger_joint"),
       &cmd_eff[num_full_dof - 1]);
   jnt_eff_interface.registerHandle(grp_eff_handle);
 
@@ -238,13 +245,13 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   finger = gripper_command.mutable_gripper()->add_finger();
   finger->set_finger_identifier(1);
 
-  arm_mode = hardware_interface::JointCommandModes::MODE_VELOCITY;
-  gripper_mode = hardware_interface::JointCommandModes::MODE_VELOCITY;
+  arm_mode = hardware_interface::JointCommandModes::MODE_EFFORT;
+  gripper_mode = hardware_interface::JointCommandModes::MODE_POSITION;
   last_arm_mode = hardware_interface::JointCommandModes::BEGIN;
 
   // Initialize the low pass filter
-  in_lpf = new LowPassFilter(0.001, 30, num_full_dof);
-  out_lpf = new LowPassFilter(0.001, 500, num_full_dof);
+  in_lpf = new LowPassFilter(1000, 30, num_full_dof);
+  out_lpf = new LowPassFilter(1000, 100, num_full_dof);
 
   // Initialize current control parameters
   if (num_arm_dof == 6)
@@ -260,25 +267,55 @@ Gen3Robot::Gen3Robot(ros::NodeHandle nh)
   }
 
   // pinnochio initialization
-  std::string package_path, urdf_path;
-  try
-  {
-    package_path = ros::package::getPath("kortex_description");
-    if (mURDFFile.empty())
-    {
-      if (num_arm_dof == 6)
-        mURDFFile = "gen3_6dof_vision_forque.urdf";
-      else
-        mURDFFile = "gen3_7dof_vision.urdf";
-    }
-    urdf_path = package_path + "/robots/" + mURDFFile;
-  }
-  catch (const std::exception& e)
-  {
-    std::cerr << "URDF read error: " << e.what() << std::endl;
-  }
-  pinocchio::urdf::buildModel(urdf_path, model);
+  pinocchio::urdf::buildModel(mURDFFile, model);
   data = pinocchio::Data(model);
+  q_ = pinocchio::neutral(model);
+  gravity_ = pinocchio::computeGeneralizedGravity(model, data, q_); 
+
+#ifdef KORTEX_HARDWARE__THREAD_PRIORITY
+  std::ifstream realtime_file {"/sys/kernel/realtime", std::ios::in};
+  bool has_realtime {false};
+  if (realtime_file.is_open()) {
+    realtime_file >> has_realtime;
+  }
+
+  ::pthread_t const current_thread {pthread_self()};
+  int cpu_core {-1};
+  if (ros::param::get("~cpu_core", cpu_core)) {
+    ::cpu_set_t cpuset {};
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_core, &cpuset);
+    if (::pthread_setaffinity_np(current_thread, sizeof(::cpu_set_t), &cpuset) == 0) {
+      std::cout << "Set thread affinity to cpu '" << cpu_core << "'!" << std::endl;
+    } else {
+      std::cerr << "Failed to set thread affinity to cpu '" << cpu_core << "'!" << std::endl;
+    }
+  } else {
+    std::cerr << "Failed to get cpu_core for setting thread affinity, not pinning process!" << std::endl;
+  }
+  int policy {};
+  struct ::sched_param param {};
+  ::pthread_getschedparam(current_thread, &policy, &param);
+  if (has_realtime) {
+    policy = SCHED_FIFO;
+    std::cout << "Real-time system detected: Setting policy to 'SCHED_FIFO'..." << std::endl;
+  }
+  int const max_thread_priority {::sched_get_priority_max(policy)};
+  if (max_thread_priority != -1) {
+    param.sched_priority = max_thread_priority;
+    if (::pthread_setschedparam(current_thread, policy, &param) == 0) {
+      std::cout << "Set thread priority '" << param.sched_priority << "' and policy '" <<
+       policy << "' to async thread!" << std::endl;
+    } else {
+      std::cerr << "Failed to set thread priority '" << param.sched_priority << "' and policy '" <<
+       policy << "' to async thread!" << std::endl;
+    }
+  } else {
+    std::cerr << "Could not set thread priority to async thread: Failed to get max priority!" << std::endl;
+  }
+#endif  // KORTEX_HARDWARE__THREAD_PRIORITY
+
+
 }
 
 Gen3Robot::~Gen3Robot()
@@ -546,6 +583,33 @@ void Gen3Robot::sendGripperVelocityCommand(const float& command)
   }
 }
 
+void Gen3Robot::sendGripperEffortCommand(const float& command)
+{ 
+  gripper_command.set_mode(k_api::Base::GRIPPER_FORCE);
+  finger->set_value(command);
+  try
+  {
+    mBase->SendGripperCommand(gripper_command);
+  }
+  catch (k_api::KDetailedException& ex)
+  {
+    std::cout << "Kortex exception: " << ex.what() << std::endl;
+
+    std::cout << "Error sub-code: "
+              << k_api::SubErrorCodes_Name(k_api::SubErrorCodes(
+                     (ex.getErrorInfo().getError().error_sub_code())))
+              << std::endl;
+  }
+  catch (std::runtime_error& ex2)
+  {
+    std::cout << "runtime error: " << ex2.what() << std::endl;
+  }
+  catch (...)
+  {
+    std::cout << "Unknown error." << std::endl;
+  }
+}
+
 void Gen3Robot::setBaseCommand()
 {
   k_api::BaseCyclic::Command base_command;
@@ -737,6 +801,8 @@ void Gen3Robot::sendCurrentCommand(std::vector<double>& command)
   catch (std::runtime_error& ex2)
   {
     std::cout << "Error: " << ex2.what() << std::endl;
+  } catch (...) {
+    std::cout << "Unknown exception inside 'sendCurrentCommand' caught" << std::endl;
   }
   last = GetTickUs();
 }
@@ -829,6 +895,9 @@ void Gen3Robot::write(void)
         case hardware_interface::JointCommandModes::MODE_POSITION:
           sendGripperPositionCommand(cmd_pos[num_full_dof - 1]);
           break;
+        case hardware_interface::JointCommandModes::MODE_EFFORT:
+          sendGripperPositionCommand(cmd_pos[num_full_dof - 1]);
+          break;
         default:
           // Stop Gripper
           sendGripperVelocityCommand(0);
@@ -886,9 +955,9 @@ void Gen3Robot::read(void)
     in_lpf->initLPF(eff);
     is_in_lpf_initialized = true;
   }
-  // in_lpf->getFilteredEffort(eff);
-  // std::vector<double> filteredEff = in_lpf->getFilteredEffort(eff);
-  // eff = filteredEff;
+  in_lpf->getFilteredEffort(eff);
+  std::vector<double> filteredEff = in_lpf->getFilteredEffort(eff);
+  eff = filteredEff;
 
   // Read finger state. Note: position and velocity are percentage values
   // (0-100). Effort is set as current consumed by gripper motor (mA).
